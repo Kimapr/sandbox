@@ -89,9 +89,7 @@ end
 local cwrap=sand.cwrap
 
 local boxes={}
-local mainbox={
-	strmeta=debug.getmetatable("")
-}
+local mainbox={}
 
 local enter
 local regbox
@@ -99,8 +97,9 @@ local coroid
 local thrs
 
 do
-	local debug,type,unpack,error,resume,yield,create,running =
-		debug,type,unpack,error,
+	local type,unpack,error,next,rawequal,rawset,rawget,
+	      resume,yield,create,running =
+		type,unpack,error,next,rawequal,rawset,rawget,
 		coroutine.resume,
 		coroutine.yield,
 		coroutine.create,
@@ -116,14 +115,17 @@ do
 		},{__mode="k"}),
 		curbox=mainbox
 	}
-	local dbgsetmeta=debug.setmetatable
-	function debug.setmetatable(item,meta)
-		if type(item)=="string" then
-			thrs[coroid()].curbox.strmeta=meta
-		end
-		return crashwrap(dbgsetmeta,item,meta)
-	end
 	local rsetfenv=setfenv
+	local gstrmeta=getmetatable("")
+	local gstrmetameta
+	local rsetmetatable=setmetatable
+	function setmetatable(t,m)
+		crashwrap(rsetmetatable,t,m)
+		if rawequal(t,gstrmeta) then
+			gstrmetameta=m
+		end
+		return t
+	end
 	function setfenv(f,e)
 		if rawequal(f,0) and type(e)=="table" then
 			thrs[coroid()].envs[thrs[coroid()].curbox]=e
@@ -131,15 +133,34 @@ do
 		return crashwrap(rsetfenv,f,e)
 	end
 	local function menter(box)
-		debug.setmetatable("",box.strmeta)
+		local oldbox=thrs[coroid()].curbox
+		oldbox.strmeta={fields={},meta=gstrmetameta}
+		for k,v in next,gstrmeta do
+			oldbox.strmeta.fields[k]=v
+			rawset(gstrmeta,k,nil)
+		end
+		for k,v in next,box.strmeta.fields do
+			rawset(gstrmeta,k,v)
+		end
+		local oldmtf
+		if gstrmetameta then
+			oldmtf=rawget(gstrmetameta,"__metatable")
+			rawset(gstrmetameta,"__metatable",nil)
+		end
+		rsetmetatable(gstrmeta,box.strmeta.meta)
+		if gstrmetameta then
+			rawset(gstrmetameta,"__metatable",oldmtf)
+		end
+		gstrmetameta=box.strmeta.meta
 	end
 	enter=function(box)
+		assert(thrs[coroid()],"current coroutine not tracked by sandbox")
 		local curbox=thrs[coroid()].curbox
 		if not thrs[coroid()].envs[box] then
 			error("wacky",2)
 		end
-		thrs[coroid()].curbox=box
 		menter(box)
+		thrs[coroid()].curbox=box
 		rsetfenv(0,thrs[coroid()].envs[box])
 		return curbox
 	end
@@ -151,14 +172,24 @@ do
 	end
 	function coroutine.resume(coro,...)
 		if coro then
+			if thrs[coro] and not thrs[coroid()] then
+				error("attempt to resume sandboxed coroutined from untracked coroutine",2)
+			end
+			if not thrs[coro] then
+				return crashwrap(resume,coro,...)
+			end
 			menter(thrs[coro].curbox)
 		end
 		local ret={crashwrap(resume,coro,...)}
+		assert(coro,"wat")
 		menter(thrs[coroid()].curbox)
 		return unpack(ret)
 	end
 	function coroutine.create(fn)
 		local coro=crashwrap(create,fn)
+		if not thrs[coroid()] then
+			return coro
+		end
 		thrs[coro]={
 			envs=setmetatable({},{__mode="k"}),
 			curbox=thrs[coroid()].curbox
@@ -180,7 +211,7 @@ do
 		end
 	end
 	setfenv=cwrap(setfenv)
-	debug.setmetatable=cwrap(debug.setmetatable)
+	setmetatable=cwrap(setmetatable)
 	coroutine.resume=cwrap(coroutine.resume)
 	coroutine.create=cwrap(coroutine.create)
 	coroutine.wrap=cwrap(coroutine.wrap)
@@ -291,7 +322,9 @@ function sand.new()
 	e._G=e
 	local box={
 		strmeta={
-			__index=e.string
+			fields={
+				__index=e.string
+			}
 		}
 	}
 	regbox(box,e)
