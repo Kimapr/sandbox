@@ -30,14 +30,77 @@ do
 	local error=error
 	local pcall=pcall
 	local unpack=unpack
-	crashwrap=function(fn,...)
+	local gsub=string.gsub
+	local type=type
+	crashwrap=function(name,fn,...)
 		local ret={pcall(fn,...)}
 		if not ret[1] then
+			if type(ret[2])=="string" then
+				ret[2]=gsub(ret[2],"?",name)
+			end
 			error(ret[2],3)
 		end
 		return unpack(ret,2)
 	end
 end
+
+local fenvhide,fenvblock
+do
+	local shielded=setmetatable({},{__mode="k"})
+	fenvhide=function(f)
+		shielded[f]=shielded[f] or {}
+		shielded[f].hidden=true
+		return f
+	end
+	fenvblock=function(f)
+		shielded[f]=shielded[f] or {}
+		shielded[f].blocked=true
+		return f
+	end
+	local rsetfenv,rgetfenv=setfenv,getfenv
+	local pcall=pcall
+	local error=error
+	local function traceback()
+		local t={}
+		for n=2,2^31-1 do
+			local gok,env=pcall(rgetfenv,n)
+			if not gok then break end
+			local sok,fn=pcall(rsetfenv,n,env)
+			local shl=shielded[fn]
+			if shl and shl.blocked then break end
+			if not shl or not shl.hidden then
+				t[n-1]=n
+			end
+		end
+		return t
+	end
+	local type,rawequal=type,rawequal
+	function setfenv(fn,e)
+		local trace=traceback()
+		if type(fn)=="number" and not rawequal(fn,0) then
+			if not trace[fn] then
+				fn=2^31-1
+			end
+			return crashwrap("setfenv",rsetfenv,fn,e)
+		end
+		return crashwrap("setfenv",rsetfenv,fn,e)
+	end
+	function getfenv(fn)
+		trace=traceback()
+		if type(fn)=="number" and not rawequal(fn,0) then
+			if not trace[fn] then
+				fn=2^31-1
+			end
+			return crashwrap("getfenv",rgetfenv,fn)
+		end
+		return crashwrap("getfenv",rgetfenv,fn)
+	end
+	fenvhide(setfenv)
+	fenvhide(getfenv)
+end
+sand.fenvhide=fenvhide
+sand.fenvprotect=fenvprotect
+fenvhide(crashwrap)
 
 do
 	local cwrapped={}
@@ -53,32 +116,32 @@ do
 	local function cwrap(fn)
 		if isC(fn) then return fn end
 		local setfenv,getfenv=setfenv,getfenv
-		local out=function(...)
+		local out=fenvhide(function(...)
 			setfenv(fn,getfenv(0))
 			return fn(...)
-		end
+		end)
 		cwrapped[out]=true
 		return out
 	end
 	local rgetfenv,rsetfenv=getfenv,setfenv
-	function getfenv(fn)
+	getfenv=fenvhide(function(fn)
 		if fn and cwrapped[fn] then
 			return rgetfenv(0)
 		end
-		return crashwrap(rgetfenv,fn)
-	end
-	function setfenv(fn,e)
+		return crashwrap("getfenv",rgetfenv,fn)
+	end)
+	setfenv=fenvhide(function(fn,e)
 		if fn and cwrapped[fn] then
 			error("'setfenv' cannot change environment of given object",2)
 		end
-		return crashwrap(rsetfenv,fn,e)
-	end
+		return crashwrap("getfenv",rsetfenv,fn,e)
+	end)
 	local string_dump=string.dump
 	function string.dump(fn)
 		if cwrapped[fn] then
 			error("unable to dump given function",2)
 		end
-		return crashwrap(string_dump,fn)
+		return crashwrap("dump",string_dump,fn)
 	end
 	getfenv=cwrap(getfenv)
 	setfenv=cwrap(setfenv)
@@ -93,6 +156,7 @@ local mainbox={}
 
 local enter
 local regbox
+local fenvshield
 local coroid
 local thrs
 
@@ -116,11 +180,12 @@ do
 		curbox=mainbox
 	}
 	local rsetfenv=setfenv
+	local rgetfenv=getfenv
 	local gstrmeta=getmetatable("")
 	local gstrmetameta
 	local rsetmetatable=setmetatable
 	function setmetatable(t,m)
-		crashwrap(rsetmetatable,t,m)
+		crashwrap("setmetatable",rsetmetatable,t,m)
 		if rawequal(t,gstrmeta) then
 			gstrmetameta=m
 		end
@@ -130,7 +195,7 @@ do
 		if rawequal(f,0) and type(e)=="table" then
 			thrs[coroid()].envs[thrs[coroid()].curbox]=e
 		end
-		return crashwrap(rsetfenv,f,e)
+		return crashwrap("setfenv",rsetfenv,f,e)
 	end
 	local mbox=thrs[coroid()].curbox
 	local function menter(box)
@@ -179,17 +244,17 @@ do
 				error("attempt to resume sandboxed coroutine from untracked coroutine",2)
 			end
 			if (not thrs[coro]) or (thrs[coro] and thrs[coroid()] and thrs[coro].curbox==thrs[coroid()].curbox) then
-				return crashwrap(resume,coro,...)
+				return crashwrap("resume",resume,coro,...)
 			end
 			menter(thrs[coro].curbox)
 		end
-		local ret={crashwrap(resume,coro,...)}
+		local ret={crashwrap("resume",resume,coro,...)}
 		assert(coro,"wat")
 		menter(thrs[coroid()].curbox)
 		return unpack(ret)
 	end
 	function coroutine.create(fn)
-		local coro=crashwrap(create,fn)
+		local coro=crashwrap("create",create,fn)
 		if not thrs[coroid()] then
 			return coro
 		end
@@ -304,7 +369,7 @@ function sand.new()
 			if string.sub(str,1,1)=='\27' then
 				return nil,"attempt to load a binary chunk"
 			end
-			return crashwrap(loadstring,str,...)
+			return crashwrap("loadstring",loadstring,str,...)
 		end
 		function e.load(fn,...)
 			local str1=fn()
@@ -312,13 +377,13 @@ function sand.new()
 			if str1 and string.sub(str1,1,1)=="\27" then
 				return nil,"attempt to load a binary chunk"
 			end
-			return crashwrap(load,function()
+			return crashwrap("load",load,fenvhide(function()
 				if strdone then
 					strdone=false
 					return str1
 				end
 				return fn()
-			end,...)
+			end),...)
 		end
 	end
 	e=safify(e)
@@ -348,9 +413,16 @@ function sand.new()
 		return ok,err
 	end
 	local old=thrs[coroid()].curbox
+	local fenvshield=fenvblock(function(f,...)
+		local fn=function(...)
+			return f(...)
+		end
+		setfenv(fn,getfenv(f))
+		return fn(...)
+	end)
 	function t.call(fn,...)
 		local old=enter(box)
-		local ret={pcall(fn,...)}
+		local ret={pcall(fenvshield,fn,...)}
 		enter(old)
 		return unpack(ret)
 	end
