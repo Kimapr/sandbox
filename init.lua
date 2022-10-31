@@ -119,6 +119,9 @@ do
 	local gstrmeta=getmetatable("")
 	local gstrmetameta
 	local rsetmetatable=setmetatable
+	local function pp(box)
+		return box==mainbox and "MAIN" or tostring(box)
+	end
 	function setmetatable(t,m)
 		crashwrap(rsetmetatable,t,m)
 		if rawequal(t,gstrmeta) then
@@ -132,8 +135,9 @@ do
 		end
 		return crashwrap(rsetfenv,f,e)
 	end
-	local function menter(box)
-		local oldbox=thrs[coroid()].curbox
+	local mbox=thrs[coroid()].curbox
+	local function menter(box,oldbox)
+		local oldbox=mbox
 		oldbox.strmeta={fields={},meta=gstrmetameta}
 		for k,v in next,gstrmeta do
 			oldbox.strmeta.fields[k]=v
@@ -148,14 +152,16 @@ do
 			rawset(gstrmetameta,"__metatable",nil)
 		end
 		rsetmetatable(gstrmeta,box.strmeta.meta)
+		gstrmetameta=box.strmeta.meta
 		if gstrmetameta then
 			rawset(gstrmetameta,"__metatable",oldmtf)
 		end
-		gstrmetameta=box.strmeta.meta
+		mbox=box
 	end
 	enter=function(box)
 		assert(thrs[coroid()],"current coroutine not tracked by sandbox")
 		local curbox=thrs[coroid()].curbox
+		if curbox==box then return curbox end
 		if not thrs[coroid()].envs[box] then
 			error("wacky",2)
 		end
@@ -173,9 +179,9 @@ do
 	function coroutine.resume(coro,...)
 		if coro then
 			if thrs[coro] and not thrs[coroid()] then
-				error("attempt to resume sandboxed coroutined from untracked coroutine",2)
+				error("attempt to resume sandboxed coroutine from untracked coroutine",2)
 			end
-			if not thrs[coro] then
+			if (not thrs[coro]) or (thrs[coro] and thrs[coroid()] and thrs[coro].curbox==thrs[coroid()].curbox) then
 				return crashwrap(resume,coro,...)
 			end
 			menter(thrs[coro].curbox)
@@ -344,12 +350,11 @@ function sand.new()
 		end
 		return ok,err
 	end
-	local old
+	local old=thrs[coroid()].curbox
 	function t.call(fn,...)
-		old=enter(box)
+		local old=enter(box)
 		local ret={pcall(fn,...)}
 		enter(old)
-		old=nil
 		return unpack(ret)
 	end
 	function t.outcall(fn,...)
@@ -357,12 +362,6 @@ function sand.new()
 		local ret={pcall(fn,...)}
 		enter(new)
 		return unpack(ret)
-	end
-	function t.setenv(ee)
-		e=ee
-	end
-	function t.getenv()
-		return e
 	end
 	for k,v in pairs(t) do
 		t[k]=wrapself(t,v)
