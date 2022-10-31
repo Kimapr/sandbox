@@ -119,9 +119,6 @@ do
 	local gstrmeta=getmetatable("")
 	local gstrmetameta
 	local rsetmetatable=setmetatable
-	local function pp(box)
-		return box==mainbox and "MAIN" or tostring(box)
-	end
 	function setmetatable(t,m)
 		crashwrap(rsetmetatable,t,m)
 		if rawequal(t,gstrmeta) then
@@ -136,7 +133,7 @@ do
 		return crashwrap(rsetfenv,f,e)
 	end
 	local mbox=thrs[coroid()].curbox
-	local function menter(box,oldbox)
+	local function menter(box)
 		local oldbox=mbox
 		oldbox.strmeta={fields={},meta=gstrmetameta}
 		for k,v in next,gstrmeta do
