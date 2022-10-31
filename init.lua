@@ -32,13 +32,21 @@ do
 	local unpack=unpack
 	local gsub=string.gsub
 	local type=type
-	crashwrap=function(name,fn,...)
-		local ret={pcall(fn,...)}
+	crashwrap=function(name,lvl,fn,...)
+		local args
+		if type(lvl)=="function" then
+			fn,lvl=lvl,fn
+			args={lvl,...}
+			lvl=4
+		else
+			args={...}
+		end
+		local ret={pcall(fn,unpack(args))}
 		if not ret[1] then
 			if type(ret[2])=="string" then
 				ret[2]=gsub(ret[2],"?",name)
 			end
-			error(ret[2],3)
+			error(ret[2],lvl)
 		end
 		return unpack(ret,2)
 	end
@@ -62,6 +70,7 @@ do
 	local error=error
 	local function traceback()
 		local t={}
+		local ns=1
 		for n=2,2^31-1 do
 			local gok,env=pcall(rgetfenv,n)
 			if not gok then break end
@@ -69,7 +78,8 @@ do
 			local shl=shielded[fn]
 			if shl and shl.blocked then break end
 			if not shl or not shl.hidden then
-				t[n-1]=n
+				t[ns]=n
+				ns=ns+1
 			end
 		end
 		return t
@@ -79,21 +89,25 @@ do
 		local trace=traceback()
 		if type(fn)=="number" and not rawequal(fn,0) then
 			if not trace[fn] then
-				fn=2^31-1
+				fn=2^31-2
+			else
+				fn=trace[fn]
 			end
-			return crashwrap("setfenv",rsetfenv,fn,e)
+			return crashwrap("setfenv",3,rsetfenv,fn,e)
 		end
-		return crashwrap("setfenv",rsetfenv,fn,e)
+		return crashwrap("setfenv",3,rsetfenv,fn,e)
 	end
 	function getfenv(fn)
 		trace=traceback()
 		if type(fn)=="number" and not rawequal(fn,0) then
 			if not trace[fn] then
-				fn=2^31-1
+				fn=2^31-2
+			else
+				fn=trace[fn]
 			end
-			return crashwrap("getfenv",rgetfenv,fn)
+			return crashwrap("getfenv",3,rgetfenv,fn)
 		end
-		return crashwrap("getfenv",rgetfenv,fn)
+		return crashwrap("getfenv",3,rgetfenv,fn)
 	end
 	fenvhide(setfenv)
 	fenvhide(getfenv)
@@ -116,10 +130,11 @@ do
 	local function cwrap(fn)
 		if isC(fn) then return fn end
 		local setfenv,getfenv=setfenv,getfenv
-		local out=fenvhide(function(...)
+		fenvhide(fn)
+		local out=function(...)
 			setfenv(fn,getfenv(0))
 			return fn(...)
-		end)
+		end
 		cwrapped[out]=true
 		return out
 	end
@@ -143,8 +158,8 @@ do
 		end
 		return crashwrap("dump",string_dump,fn)
 	end
-	getfenv=cwrap(getfenv)
-	setfenv=cwrap(setfenv)
+	getfenv=fenvhide(cwrap(getfenv))
+	setfenv=fenvhide(cwrap(setfenv))
 	string.dump=cwrap(string.dump)
 	sand.cwrap=cwrap
 end
@@ -414,10 +429,9 @@ function sand.new()
 	end
 	local old=thrs[coroid()].curbox
 	local fenvshield=fenvblock(function(f,...)
-		local fn=function(...)
+		local fn=cwrap(function(...)
 			return f(...)
-		end
-		setfenv(fn,getfenv(f))
+		end)
 		return fn(...)
 	end)
 	function t.call(fn,...)
